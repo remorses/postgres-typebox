@@ -77,7 +77,7 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
             export const ${table} = Type.Object({`
             for (const desc of describes) {
                 const field = isCamelCase
-                    ? camelCase(desc.column_name)
+                    ? camelCase(desc.column_name, { pascalCase: true })
                     : desc.column_name
                 // console.log(desc)
                 const type = getType(desc, `${table}.${field}`)
@@ -85,7 +85,7 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
             }
             content += `\n  })
 
-            export type ${camelCase(`${table}Type`)} = Static<typeof ${table}>`
+            export type ${camelCase(`${table}Type`, { pascalCase: true })} = Static<typeof ${table}>`
         }
 
         const out = await dprint.format(config.output, content, {

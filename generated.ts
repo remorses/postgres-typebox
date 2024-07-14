@@ -6,22 +6,22 @@ export enum Role {
 }
 
 export const Post = Type.Object({
-  id: Type.Number(),
-  createdAt: Type.String({ minLength: 1, },),
-  updatedAt: Type.String({ minLength: 1, },),
-  published: Type.Boolean(),
-  authorId: Type.Optional(Type.Number(),),
-  title: Type.String({ minLength: 1, },),
+  Id: Type.Number(),
+  CreatedAt: Type.String({ minLength: 1, },),
+  UpdatedAt: Type.String({ minLength: 1, },),
+  Published: Type.Boolean(),
+  AuthorId: Type.Optional(Type.Number(),),
+  Title: Type.String({ minLength: 1, },),
 },);
 
-export type postType = Static<typeof Post>;
+export type PostType = Static<typeof Post>;
 
 export const User = Type.Object({
-  id: Type.Number(),
-  createdAt: Type.String({ minLength: 1, },),
-  role: Type.Enum(Role,),
-  email: Type.String({ minLength: 1, },),
-  name: Type.Optional(Type.String(),),
+  Id: Type.Number(),
+  CreatedAt: Type.String({ minLength: 1, },),
+  Role: Type.Enum(Role,),
+  Email: Type.String({ minLength: 1, },),
+  Name: Type.Optional(Type.String(),),
 },);
 
-export type userType = Static<typeof User>;
+export type UserType = Static<typeof User>;
