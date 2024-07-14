@@ -8,7 +8,7 @@
     "license": "MIT",
     "scripts": {
         "build": "tsc",
-        "play": "node dist/generator.js --uri postgres://morse@localhost:5432/postgres --output ./generated --camelCase"
+        "play": "node dist/generator.js --uri postgres://morse@localhost:5432/postgres --output ./generated.ts --camelCase"
     },
     "devDependencies": {
         "@sinclair/typebox": "^0.26.5",
@@ -21,6 +21,7 @@
         "@prisma/client": "5.16.2",
         "cac": "^6.7.14",
         "camelcase": "^7.0.1",
+        "dprint-node": "^1.0.8",
         "fs-extra": "^11.1.1",
         "pg": "^8.12.0"
     }

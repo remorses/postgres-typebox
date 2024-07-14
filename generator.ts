@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import dprint from 'dprint-node'
 import pg from 'pg'
 import cac from 'cac'
 import path from 'node:path'
@@ -21,13 +22,29 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
         await client.connect()
 
         const t = await client.query(
-            'SELECT table_name as table_name FROM information_schema.tables WHERE table_schema = ?',
-            ['public'],
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
         )
-        let tables = t.rows[0]
-            .map((row: any) => row.table_name)
-            .filter((table: string) => !table.startsWith('knex_'))
+        const enums = await client.query(
+            'SELECT t.typname AS enum_name, array_agg(e.enumlabel) AS values ' +
+                'FROM pg_type t ' +
+                'JOIN pg_enum e ON t.oid = e.enumtypid ' +
+                "WHERE t.typtype = 'e' AND t.typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public') " +
+                'GROUP BY t.typname',
+        )
+        const enumsWithoutBrackets: {
+            enum_name: string
+            values: string[]
+        }[] = enums.rows.map((row) => ({
+            enum_name: row.enum_name,
+            values: row.values.slice(1, -1).split(','),
+        }))
+
+        let tables = t.rows
+            .map((row) => row.table_name)
+            .filter((table) => !table.startsWith('knex_'))
             .sort() as Tables
+
+        console.log(enums.rows)
 
         const onlyTables =
             typeof config.table === 'string' ? [config.table] : config.table
@@ -39,36 +56,47 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
 
         let content = `import { Type } from '@sinclair/typebox'
         import type { Static } from '@sinclair/typebox'`
+
+        for (const en of enumsWithoutBrackets) {
+            content += `
+            export enum ${en.enum_name} {
+                ${en.values.join(', ')}
+            }
+            `
+        }
+
         for (let table of tables) {
             console.log(`Processing ${table}...`)
-            const d = await client.query(`DESC ${table}`)
-            const describes = d.rows[0] as Desc[]
-            if (isCamelCase) table = camelCase(table)
+            const d = await client.query(
+                `SELECT * FROM information_schema.columns WHERE table_name = '${table}'`,
+            )
+            const describes = d.rows
+            if (isCamelCase) table = camelCase(table, { pascalCase: true })
             content += `
 
-  export const ${table} = Type.Object({`
+            export const ${table} = Type.Object({`
             for (const desc of describes) {
-                const field = isCamelCase ? camelCase(desc.Field) : desc.Field
-                const type = getType(desc.Type, desc.Null)
+                const field = isCamelCase
+                    ? camelCase(desc.column_name)
+                    : desc.column_name
+                // console.log(desc)
+                const type = getType(desc, `${table}.${field}`)
                 content += `    ${field}: ${type},`
             }
             content += `\n  })
 
-  export type ${camelCase(`${table}Type`)} = Static<typeof ${table}>
-  `
+            export type ${camelCase(`${table}Type`)} = Static<typeof ${table}>`
         }
 
-        await fs.writeFileSync(config.output, content, 'utf8')
+        const out = await dprint.format(config.output, content, {
+            trailingCommas: 'always',
+        })
+        await fs.writeFileSync(config.output, out, 'utf8')
 
         await client.end()
     })
 
 type Tables = string[]
-interface Desc {
-    Field: string
-    Type: string
-    Null: 'YES' | 'NO'
-}
 
 cli.help().parse()
 
@@ -78,9 +106,9 @@ function nullable(type: string) {
     return `Type.Optional(${type})`
 }
 
-function getType(descType: Desc['Type'], descNull: Desc['Null']) {
-    const type = descType.split('(')[0].split(' ')[0]
-    const isNull = descNull === 'YES'
+function getType(desc: Desc, field: string) {
+    const type = desc.data_type.split(' ')[0]
+    const isNull = desc.is_nullable === 'YES'
     switch (type) {
         case 'date':
         case 'datetime':
@@ -88,34 +116,90 @@ function getType(descType: Desc['Type'], descNull: Desc['Null']) {
         case 'time':
         case 'year':
         case 'char':
+        case 'character':
         case 'varchar':
-        case 'tinytext':
         case 'text':
-        case 'mediumtext':
-        case 'longtext':
         case 'json':
         case 'decimal':
+        case 'numeric':
             if (isNull) return nullable('Type.String()')
             else if (isRequiredString) return 'Type.String({ minLength: 1 })'
             else return 'Type.String()'
         case 'tinyint':
         case 'smallint':
-        case 'mediumint':
         case 'int':
+        case 'integer':
         case 'bigint':
         case 'float':
         case 'double':
-            const unsigned = descType.endsWith(' unsigned')
+        case 'real':
+            const unsigned = desc.data_type.endsWith(' unsigned')
             const numberType = unsigned
                 ? 'Type.Number({ minimum: 0 })'
                 : 'Type.Number()'
             if (isNull) return nullable(numberType)
             else return numberType
-        case 'enum':
-            const value = descType
-                .replace('enum(', '')
-                .replace(')', '')
-                .replaceAll(',', ', ')
-            return `Type.Unsafe<${value.replaceAll(', ', ' | ')}>({ type: 'string', enum: [${value}] })`
+        case 'boolean':
+            if (isNull) return nullable('Type.Boolean()')
+            else return 'Type.Boolean()'
+        case 'USER-DEFINED':
+            return `Type.Enum(${desc.udt_name})`
+        // case 'enum':
+        //     const value = desc.data_type
+        //         .replace('enum(', '')
+        //         .replace(')', '')
+        //         .replaceAll(',', ', ')
+        //     return `Type.Unsafe<${value.replaceAll(', ', ' | ')}>({ type: 'string', enum: [${value}] })`
+        default:
+            throw new Error(
+                `Unknown type ${type} for ${field}\n${JSON.stringify(desc)}`,
+            )
     }
+}
+
+export type Desc = {
+    table_catalog: string
+    table_schema: string
+    table_name: string
+    column_name: string
+    ordinal_position: number
+    column_default: string
+    is_nullable: string
+    data_type: string
+    character_maximum_length: number | null
+    character_octet_length: number | null
+    numeric_precision: number | null
+    numeric_precision_radix: number | null
+    numeric_scale: number | null
+    datetime_precision: number | null
+    interval_type: string | null
+    interval_precision: number | null
+    character_set_catalog: string | null
+    character_set_schema: string | null
+    character_set_name: string | null
+    collation_catalog: string | null
+    collation_schema: string | null
+    collation_name: string | null
+    domain_catalog: string | null
+    domain_schema: string | null
+    domain_name: string | null
+    udt_catalog: string
+    udt_schema: string
+    udt_name: string
+    scope_catalog: string | null
+    scope_schema: string | null
+    scope_name: string | null
+    maximum_cardinality: number | null
+    dtd_identifier: string
+    is_self_referencing: string
+    is_identity: string
+    identity_generation: string | null
+    identity_start: number | null
+    identity_increment: number | null
+    identity_maximum: number | null
+    identity_minimum: number | null
+    identity_cycle: string
+    is_generated: string
+    generation_expression: string | null
+    is_updatable: string
 }
