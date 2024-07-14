@@ -3,7 +3,7 @@
     "version": "0.0.0",
     "description": "Generate Typebox interfaces from Postgres database",
     "type": "module",
-    "bin": "dist/generator.js",
+    "bin": "bin.js",
     "repository": "https://github.com/remorses/postgres-typebox",
     "license": "MIT",
     "scripts": {

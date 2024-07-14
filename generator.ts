@@ -43,7 +43,7 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
             .filter((table) => !table.startsWith('knex_'))
             .sort() as Tables
 
-        console.log(enums.rows)
+        // console.log(enums.rows)
 
         const onlyTables =
             typeof config.table === 'string' ? [config.table] : config.table
@@ -63,29 +63,38 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
             }
             `
         }
+        const tableDescriptions = await Promise.all(
+            tables.map(async (table) => {
+                const d = await client.query(
+                    `SELECT * FROM information_schema.columns WHERE table_name = '${table}'`,
+                )
+                const describes = d.rows
+                return { describes, table }
+            }),
+        )
 
-        for (let table of tables) {
-            console.log(`Processing ${table}...`)
-            const d = await client.query(
-                `SELECT * FROM information_schema.columns WHERE table_name = '${table}'`,
-            )
-            const describes = d.rows
-            if (isCamelCase) table = camelCase(table, { pascalCase: true })
-            content += `
+        content += tableDescriptions
+            .map(({ describes, table }) => {
+                console.log(`Processing ${table}...`)
+                if (isCamelCase) table = camelCase(table, { pascalCase: true })
+                const fields = describes
+                    .map((desc) => {
+                        const field = isCamelCase
+                            ? camelCase(desc.column_name, { pascalCase: true })
+                            : desc.column_name
+                        const type = getType(desc, `${table}.${field}`)
+                        return `    ${field}: ${type},`
+                    })
+                    .join('\n')
+                const typeName = camelCase(`${table}Type`, { pascalCase: true })
+                return `
+                export const ${table} = Type.Object({
+                ${fields}
+                })
 
-            export const ${table} = Type.Object({`
-            for (const desc of describes) {
-                const field = isCamelCase
-                    ? camelCase(desc.column_name, { pascalCase: true })
-                    : desc.column_name
-                // console.log(desc)
-                const type = getType(desc, `${table}.${field}`)
-                content += `    ${field}: ${type},`
-            }
-            content += `\n  })
-
-            export type ${camelCase(`${table}Type`, { pascalCase: true })} = Static<typeof ${table}>`
-        }
+                export type ${typeName} = Static<typeof ${table}>`
+            })
+            .join('\n\n')
 
         const out = await dprint.format(config.output, content, {
             trailingCommas: 'always',
@@ -108,22 +117,28 @@ function nullable(type: string) {
 function getType(desc: Desc, field: string) {
     const type = desc.data_type.split(' ')[0]
     const isNull = desc.is_nullable === 'YES'
+    console.log(`${field}: ${type}`)
+    let resultType
     switch (type) {
-        case 'date':
-        case 'datetime':
-        case 'timestamp':
-        case 'time':
-        case 'year':
         case 'char':
         case 'character':
         case 'varchar':
         case 'text':
-        case 'json':
         case 'decimal':
+        case 'uuid':
         case 'numeric':
-            if (isNull) return nullable('Type.String()')
-            else if (isRequiredString) return 'Type.String({ minLength: 1 })'
-            else return 'Type.String()'
+            resultType = 'Type.String()'
+            break
+        case 'json':
+            resultType = 'Type.Any()'
+            break
+        case 'date':
+        case 'time':
+        case 'year':
+        case 'datetime':
+        case 'timestamp':
+            resultType = 'Type.Date()'
+            break
         case 'tinyint':
         case 'smallint':
         case 'int':
@@ -133,14 +148,13 @@ function getType(desc: Desc, field: string) {
         case 'double':
         case 'real':
             const unsigned = desc.data_type.endsWith(' unsigned')
-            const numberType = unsigned
+            resultType = unsigned
                 ? 'Type.Number({ minimum: 0 })'
                 : 'Type.Number()'
-            if (isNull) return nullable(numberType)
-            else return numberType
+            break
         case 'boolean':
-            if (isNull) return nullable('Type.Boolean()')
-            else return 'Type.Boolean()'
+            resultType = 'Type.Boolean()'
+            break
         case 'USER-DEFINED':
             return `Type.Enum(${desc.udt_name})`
         // case 'enum':
@@ -151,9 +165,10 @@ function getType(desc: Desc, field: string) {
         //     return `Type.Unsafe<${value.replaceAll(', ', ' | ')}>({ type: 'string', enum: [${value}] })`
         default:
             throw new Error(
-                `Unknown type ${type} for ${field}\n${JSON.stringify(desc)}`,
+                `Unknown type ${type} for ${field} ${JSON.stringify(desc, null, 2)}`,
             )
     }
+    return isNull ? nullable(resultType) : resultType
 }
 
 export type Desc = {
