@@ -30,32 +30,34 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
         } else if (config.schema?.length) {
             schemas = config.schema
         }
-        const t = await client.query(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = ANY($1) AND table_type = 'BASE TABLE'",
-            [[schemas.map((schema) => schema)]],
-        )
-        const enums = await client.query(
-            'SELECT t.typname AS enum_name, array_agg(e.enumlabel) AS values ' +
-                'FROM pg_type t ' +
-                'JOIN pg_enum e ON t.oid = e.enumtypid ' +
-                "WHERE t.typtype = 'e' AND t.typnamespace IN (SELECT oid FROM pg_namespace WHERE nspname = ANY($1)) " +
-                'GROUP BY t.typname',
-            [[schemas.map((schema) => schema)]],
-        )
+
+        const [tableRows, enumRows] = await Promise.all([
+            client.query(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = ANY($1) AND table_type = 'BASE TABLE'",
+                [[schemas.map((schema) => schema)]],
+            ),
+            client.query(
+                'SELECT t.typname AS enum_name, array_agg(e.enumlabel) AS values ' +
+                    'FROM pg_type t ' +
+                    'JOIN pg_enum e ON t.oid = e.enumtypid ' +
+                    "WHERE t.typtype = 'e' AND t.typnamespace IN (SELECT oid FROM pg_namespace WHERE nspname = ANY($1)) " +
+                    'GROUP BY t.typname',
+                [[schemas.map((schema) => schema)]],
+            ),
+        ])
+
         const enumsWithoutBrackets: {
             enum_name: string
             values: string[]
-        }[] = enums.rows.map((row) => ({
+        }[] = enumRows.rows.map((row) => ({
             enum_name: row.enum_name,
             values: row.values.slice(1, -1).split(','),
         }))
 
-        let tables = t.rows
+        let tables = tableRows.rows
             .map((row) => row.table_name)
             .filter((table) => !table.startsWith('knex_'))
             .sort() as Tables
-
-        // console.log(enums.rows)
 
         const onlyTables =
             typeof config.table === 'string' ? [config.table] : config.table
@@ -75,6 +77,7 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
             }
             `
         }
+
         const tableDescriptions = await Promise.all(
             tables.map(async (table) => {
                 const d = await client.query(
@@ -167,7 +170,9 @@ function getType(desc: Desc, field: string) {
         case 'double':
         case 'real':
             const unsigned = desc.data_type.endsWith(' unsigned')
-            resultType = unsigned ? 'Type.Number({ minimum: 0 })' : 'Type.Number()'
+            resultType = unsigned
+                ? 'Type.Number({ minimum: 0 })'
+                : 'Type.Number()'
             break
         case 'boolean':
             resultType = 'Type.Boolean()'
