@@ -13,6 +13,10 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
     .option('--output <output>', 'Output directory')
     .option('--camelCase', 'Use camelCase', { default: false })
     .option('--table <table>', 'Only this table, can be passed multiple times')
+    .option(
+        '--schema <table>',
+        'Only this schema, can be passed multiple times',
+    )
 
     .action(async (config) => {
         const isCamelCase = config.camelCase
@@ -20,15 +24,23 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
         const client = new pg.Client({ connectionString: config.uri })
         await client.connect()
 
+        let schemas = ['public']
+        if (typeof config.schema === 'string') {
+            schemas = [config.schema]
+        } else if (config.schema?.length) {
+            schemas = config.schema
+        }
         const t = await client.query(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = ANY($1) AND table_type = 'BASE TABLE'",
+            [[schemas.map((schema) => schema)]],
         )
         const enums = await client.query(
             'SELECT t.typname AS enum_name, array_agg(e.enumlabel) AS values ' +
                 'FROM pg_type t ' +
                 'JOIN pg_enum e ON t.oid = e.enumtypid ' +
-                "WHERE t.typtype = 'e' AND t.typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public') " +
+                "WHERE t.typtype = 'e' AND t.typnamespace IN (SELECT oid FROM pg_namespace WHERE nspname = ANY($1)) " +
                 'GROUP BY t.typname',
+            [[schemas.map((schema) => schema)]],
         )
         const enumsWithoutBrackets: {
             enum_name: string
@@ -59,7 +71,7 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
         for (const en of enumsWithoutBrackets) {
             content += `
             export enum ${en.enum_name} {
-                ${en.values.join(', ')}
+                ${[...new Set(en.values)].join(', ')}
             }
             `
         }
@@ -77,7 +89,7 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
             .map(({ describes, table }) => {
                 console.log(`Processing ${table}...`)
                 if (isCamelCase) table = camelCase(table, { pascalCase: true })
-                const fields = describes
+                const fields = unique(describes, (x) => x.column_name)
                     .map((desc) => {
                         const field = isCamelCase
                             ? camelCase(desc.column_name, { pascalCase: true })
@@ -101,6 +113,12 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
         })
         await fs.writeFileSync(config.output, out, 'utf8')
 
+        if (errors.length) {
+            for (const error of errors) {
+                console.error('Error:', error.message)
+            }
+            process.exit(1)
+        }
         await client.end()
     })
 
@@ -113,12 +131,12 @@ function nullable(type: string) {
     // if (isNullish) return `Type.Optional(Type.Union([${type}, Type.Null()]))`
     return `Type.Optional(${type})`
 }
-
+let errors: Error[] = []
 function getType(desc: Desc, field: string) {
     const type = desc.data_type.split(' ')[0]
     const isNull = desc.is_nullable === 'YES'
     console.log(`${field}: ${type}`)
-    let resultType
+    let resultType = 'Type.Any()'
     switch (type) {
         case 'char':
         case 'character':
@@ -130,6 +148,7 @@ function getType(desc: Desc, field: string) {
             resultType = 'Type.String()'
             break
         case 'json':
+        case 'jsonb':
             resultType = 'Type.Any()'
             break
         case 'date':
@@ -148,24 +167,32 @@ function getType(desc: Desc, field: string) {
         case 'double':
         case 'real':
             const unsigned = desc.data_type.endsWith(' unsigned')
-            resultType = unsigned
-                ? 'Type.Number({ minimum: 0 })'
-                : 'Type.Number()'
+            resultType = unsigned ? 'Type.Number({ minimum: 0 })' : 'Type.Number()'
             break
         case 'boolean':
             resultType = 'Type.Boolean()'
             break
         case 'USER-DEFINED':
-            return `Type.Enum(${desc.udt_name})`
-        // case 'enum':
-        //     const value = desc.data_type
-        //         .replace('enum(', '')
-        //         .replace(')', '')
-        //         .replaceAll(',', ', ')
-        //     return `Type.Unsafe<${value.replaceAll(', ', ' | ')}>({ type: 'string', enum: [${value}] })`
+            resultType = `Type.Enum(${desc.udt_name})`
+            break
+        case 'ARRAY':
+            resultType = `Type.Array(Type.Any())`
+            break
+        case 'inet':
+            resultType = `Type.String({ format: 'ipv4' })`
+            break
+        case 'macaddr':
+            resultType = `Type.String({ format: 'mac' })`
+            break
+        case 'regrole':
+        case 'regclass':
+            resultType = `Type.String()`
+            break
         default:
-            throw new Error(
-                `Unknown type ${type} for ${field} ${JSON.stringify(desc, null, 2)}`,
+            errors.push(
+                new Error(
+                    `Unknown type ${type} for ${field} ${JSON.stringify(desc, null, 2)}`,
+                ),
             )
     }
     return isNull ? nullable(resultType) : resultType
@@ -216,4 +243,16 @@ export type Desc = {
     is_generated: string
     generation_expression: string | null
     is_updatable: string
+}
+
+function unique<T>(arr: T[], key: (item: T) => string) {
+    return [
+        ...arr
+            .reduce((acc, item) => {
+                const k = key(item)
+                if (!acc.has(k)) acc.set(k, item)
+                return acc
+            }, new Map<string, T>())
+            .values(),
+    ]
 }
