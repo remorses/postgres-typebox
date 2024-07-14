@@ -2,19 +2,23 @@
     "name": "postgres-typebox",
     "version": "0.0.0",
     "description": "Generate Typebox interfaces from Postgres database",
-    "bin": "generator.mjs",
+    "type": "module",
+    "bin": "dist/generator.js",
     "repository": "https://github.com/remorses/postgres-typebox",
     "license": "MIT",
     "scripts": {
-        "build": "esbuild generator.ts --format=esm --platform=node --outfile=generator.mjs --minify"
+        "build": "tsc",
+        "play": "node dist/generator.js --uri postgres://morse@localhost:5432/postgres --output ./generated --camelCase"
     },
     "devDependencies": {
         "@sinclair/typebox": "^0.26.5",
         "@types/fs-extra": "^11.0.1",
         "@types/node": "^18.15.10",
-        "@types/pg": "^8.11.6"
+        "@types/pg": "^8.11.6",
+        "prisma": "^5.16.2"
     },
     "dependencies": {
+        "@prisma/client": "5.16.2",
         "cac": "^6.7.14",
         "camelcase": "^7.0.1",
         "fs-extra": "^11.1.1",
