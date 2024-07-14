@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-import dprint from 'dprint-node'
-import pg from 'pg'
 import cac from 'cac'
-import path from 'node:path'
+import dprint from 'dprint-node'
 import fs from 'fs-extra'
+import pg from 'pg'
 
 import camelCase from 'camelcase'
 
