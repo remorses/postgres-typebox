@@ -12,6 +12,7 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
     .option('--uri <uri>', 'Postgres URI')
     .option('--output <output>', 'Output directory')
     .option('--camelCase', 'Use camelCase', { default: false })
+    .option('--elysia', 'Import typebox from elysia', { default: false })
     .option('--table <table>', 'Only this table, can be passed multiple times')
     .option(
         '--schema <table>',
@@ -67,13 +68,18 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
         if (config.ignore && config.ignore.length)
             tables = tables.filter((table) => !config.ignore.includes(table))
 
-        let content = `import { Type } from '@sinclair/typebox'
-        import type { Static } from '@sinclair/typebox'`
+        let content = ``
+        if (config.elysia) {
+            content += `import { t as Type } from 'elysia'`
+        } else {
+            content += `import { Type } from '@sinclair/typebox'
+            import type { Static } from '@sinclair/typebox'`
+        }
 
         for (const en of enumsWithoutBrackets) {
             content += `
             export enum ${en.enum_name} {
-                ${[...new Set(en.values)].join(', ')}
+                ${[...new Set(en.values)].map((v) => `${v} = '${v}'`).join(', ')}
             }
             `
         }
@@ -103,12 +109,13 @@ cli.command('', 'Generate Typebox interfaces from Postgres database')
                     .join('\n')
                 const typeName = camelCase(`${table}Type`, { pascalCase: true })
                 return `
-                export const ${table} = Type.Object({
+                export const ${table}TypeBox = Type.Object({
                 ${fields}
                 })
 
-                export type ${typeName} = Static<typeof ${table}>`
+                `
             })
+            // export type ${typeName} = Static<typeof ${table}>`
             .join('\n\n')
 
         const out = await dprint.format(config.output, content, {
@@ -129,10 +136,9 @@ type Tables = string[]
 
 cli.help().parse()
 
-const isRequiredString = true
 function nullable(type: string) {
-    // if (isNullish) return `Type.Optional(Type.Union([${type}, Type.Null()]))`
-    return `Type.Optional(${type})`
+    return `Type.Optional(Type.Union([${type}, Type.Null(), Type.Undefined()]))`
+    // return `Type.Optional(${type})`
 }
 let errors: Error[] = []
 function getType(desc: Desc, field: string) {
