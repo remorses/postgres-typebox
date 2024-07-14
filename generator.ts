@@ -137,7 +137,7 @@ type Tables = string[]
 cli.help().parse()
 
 function nullable(type: string) {
-    return `Type.Optional(Type.Union([${type}, Type.Null(), Type.Undefined()]))`
+    return `Type.Optional(Type.Union([${type}, Type.Null()]))`
     // return `Type.Optional(${type})`
 }
 let errors: Error[] = []
